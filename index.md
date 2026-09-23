@@ -1,99 +1,134 @@
-# Architectural Summary: Mini AuthService (`mini-auth-service`)
+# Architectural Summary: Mini Auth Service
 
-`mini-auth-service` is a stateless, lightweight identity and token management microservice built using **FastAPI** and **PyJWT**. The service provides identity verification, cryptographic JSON Web Token (JWT) issuance, and token validation for downstream consumers.
+The **Mini Auth Service** is a lightweight, stateless microservice engineered to provide authentication and token lifecycle management. Built on **FastAPI** and **PyJWT**, the service implements the standard OAuth2 Password Flow to verify client credentials and issue cryptographically signed JSON Web Tokens (JWT).
 
 ---
 
-## 1. High-Level Architecture & Layered Structure
+## 1. High-Level Architecture
 
-The service follows a layered architectural pattern separating network transport/routing, core cryptographic business logic, and configuration management.
+The service adopts a clean, layered architecture separating HTTP routing, authentication business logic, and runtime configuration.
 
 ```
                   +-----------------------------------+
-                  |           Client / API            |
+                  |           Client / SPA            |
                   +-----------------+-----------------+
                                     |
-                        HTTP POST / GET Requests
-                                    |
+                 HTTP POST (Login)  |  HTTP GET (Bearer Token)
                                     v
-+--------------------------------------------------------------------------+
-|  API Layer (`src/main.py`)                                               |
-|  - REST routing & HTTP error handling                                    |
-|  - Dependency Injection (OAuth2PasswordRequestForm, Token resolution)    |
-+-----------------------------------+--------------------------------------+
-                                    |
-                                    v
-+--------------------------------------------------------------------------+
-|  Security & Domain Layer (`src/auth.py`)                                 |
-|  - Credential verification & user lookup                                 |
-|  - JWT generation & symmetric signing (HMAC-SHA256)                      |
-|  - Token decoding, signature verification, and expiration checks         |
-+-----------------------------------+--------------------------------------+
-                                    |
-                                    v
-+--------------------------------------------------------------------------+
-|  Configuration Layer (`src/config.py`)                                   |
-|  - Centralized settings singleton (Secrets, Algorithm, Database URI)     |
-+--------------------------------------------------------------------------+
++-----------------------------------------------------------------------+
+|  Presentation & API Routing Layer (`src/main.py`)                   |
+|                                                                       |
+|   POST /api/v1/auth/login                 GET /api/v1/auth/me         |
+|         |                                      |                      |
+|         v                                      v                      |
++---------+--------------------------------------+----------------------+
+|  Authentication Domain Layer (`src/auth.py`)                        |
+|                                                                       |
+|   +-----------------------+     +-------------------------------+     |
+|   |   authenticate_user   |     |  verify_token                 |     |
+|   +-----------------------+     +-------------------------------+     |
+|   |   create_access_token |                                           |
+|   +-----------------------+                                           |
++-----------------------------------------------------------------------+
+                                    ^
+                                    | Reads Config
++-----------------------------------+-----------------------------------+
+|  Configuration Layer (`src/config.py`)                              |
+|   - JWT_SECRET, ALGORITHM, DATABASE_URL                               |
++-----------------------------------------------------------------------+
 ```
 
-### Component Breakdown
+---
 
-| Layer / File | Responsibility | Key Interactions |
+## 2. Component Decomposition
+
+The codebase is organized into three primary modules:
+
+| Component / File | Layer | Responsibilities | Key Symbols / Endpoints |
+| :--- | :--- | :--- | :--- |
+| `src/main.py` | Presentation / API | Route definition, request parsing, HTTP response/status generation, and dependency injection guards. | `POST /api/v1/auth/login`<br>`GET /api/v1/auth/me` |
+| `src/auth.py` | Domain Logic | Credential validation, token payload construction, cryptographic signing (HS256), and signature/expiration validation. | `authenticate_user()`<br>`create_access_token()`<br>`verify_token()` |
+| `src/config.py` | Configuration | Centralized settings, token parameters, encryption algorithms, and external connection strings. | `Settings`<br>`settings` singleton |
+
+### 2.1. Presentation Layer (`src/main.py`)
+Exposes the REST API using FastAPI. It utilizes FastAPI's built-in dependency injection system (`Depends`) to:
+- Ingest and validate form-encoded credentials via `OAuth2PasswordRequestForm`.
+- Intercept incoming requests on protected endpoints (`/api/v1/auth/me`) using `verify_token` to validate caller claims prior to route execution.
+
+### 2.2. Domain Layer (`src/auth.py`)
+Encapsulates token mechanics and credential evaluation:
+- **`authenticate_user`**: Validates incoming username and password combinations.
+- **`create_access_token`**: Packages identity claims (`sub`) alongside an expiration timestamp (`exp`), producing signed tokens with a default 15-minute Time-to-Live (TTL).
+- **`verify_token`**: Decodes and verifies inbound JWTs against the configured secret and algorithm, returning the decoded payload or handling expiration/signature errors safely.
+
+### 2.3. Configuration Layer (`src/config.py`)
+Provides application-wide constants via the `Settings` class:
+- `JWT_SECRET`: The symmetric signing key used for token operations.
+- `ALGORITHM`: Token signing standard (`HS256`).
+- `DATABASE_URL`: Target database connection string for persistence layers.
+
+---
+
+## 3. Core Data & Request Flows
+
+### 3.1. Authentication & Token Issuance Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant API as main.py (POST /auth/login)
+    participant Auth as auth.py
+    participant Conf as config.py
+
+    Client->>API: POST /api/v1/auth/login (username, password)
+    API->>Auth: authenticate_user(username, password)
+    alt Invalid Credentials
+        Auth-->>API: False / None
+        API-->>Client: 401 Unauthorized
+    else Valid Credentials
+        Auth-->>API: User / True
+        API->>Conf: Read JWT_SECRET & ALGORITHM
+        API->>Auth: create_access_token(data={"sub": username})
+        Auth-->>API: Encoded JWT String
+        API-->>Client: 200 OK {"access_token": "...", "token_type": "bearer"}
+    end
+```
+
+### 3.2. Protected Endpoint Verification Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant API as main.py (GET /auth/me)
+    participant Guard as auth.py (verify_token)
+    participant Conf as config.py
+
+    Client->>API: GET /api/v1/auth/me (Authorization: Bearer <token>)
+    API->>Guard: verify_token(token)
+    Guard->>Conf: Read JWT_SECRET & ALGORITHM
+    alt Invalid or Expired Token
+        Guard-->>API: None / Invalid
+        API-->>Client: 401 Unauthorized
+    else Valid Token
+        Guard-->>API: Decoded Payload ({"sub": "username", ...})
+        API-->>Client: 200 OK {"user": "username", "status": "active"}
+    end
+```
+
+---
+
+## 4. Key Architectural Patterns
+
+1. **Stateless Session Management**: Authentication is fully contained within signed JWTs. Because state is not maintained in memory or server-side sessions, the service can scale horizontally behind a load balancer without shared session infrastructure.
+2. **Dependency Injection (DI)**: FastAPI dependencies are used for decoupling security policies and token validation routines from endpoint business logic.
+3. **Singleton Configuration**: Application settings are initialized once and referenced globally to ensure uniform cryptographic configurations.
+
+---
+
+## 5. Architectural Roadmap & Recommended Improvements
+
+| Area | Current State | Production Target |
 | :--- | :--- | :--- |
-| **API Layer**<br>`src/main.py` | Exposes REST endpoints under `/api/v1/auth/*`, binds request parameters via Dependency Injection, maps domain results/exceptions to HTTP status codes (e.g., `401 Unauthorized`). | Invokes `src/auth.py` functions via endpoint handlers and FastAPI dependencies. |
-| **Security & Domain Layer**<br>`src/auth.py` | Encapsulates authentication logic, user verification, JWT signing with expiration claims (`exp`), and token payload extraction. | Consumes configuration parameters from `src/config.py`. |
-| **Configuration Layer**<br>`src/config.py` | Manages runtime configuration, cryptographic parameters, and secrets via an instantiated `Settings` singleton. | Injected into `src/auth.py` and across the application lifecycle. |
-
----
-
-## 2. Core Workflows & Data Flows
-
-### A. Authentication & Token Issuance (`POST /api/v1/auth/login`)
-
-The authentication lifecycle handles user credentials and produces a signed Bearer token:
-
-```
-Client                    API Router (main.py)           Auth Engine (auth.py)
-  |                                |                               |
-  |--- 1. POST /auth/login ------->|                               |
-  |    (form data: user/pass)      |--- 2. authenticate_user() --->|
-  |                                |<-- 3. user record / None -----|
-  |                                |                               |
-  |                                |--- 4. create_access_token() ->|
-  |                                |<-- 5. signed JWT string ------|
-  |<-- 6. 200 OK (access_token) ---|                               |
-```
-
-1. **Request Reception**: The client sends credentials via `application/x-www-form-urlencoded` format, parsed using FastAPI’s `OAuth2PasswordRequestForm`.
-2. **Credential Validation**: `login()` delegates to `authenticate_user()`.
-3. **Token Creation**: Upon successful authentication, `create_access_token()` constructs a JWT payload with subject (`sub`) and expiration (`exp` = current time + 15 minutes), signing it with `HS256` using `settings.JWT_SECRET`.
-4. **Response**: Returns a JSON Bearer token payload: `{"access_token": "<jwt>", "token_type": "bearer"}`.
-
----
-
-### B. Authenticated Route & Token Verification (`GET /api/v1/auth/me`)
-
-Token verification validates identity claims on protected routes:
-
-1. **Request Reception**: The client calls `/api/v1/auth/me`.
-2. **Dependency Resolution**: FastAPI resolves the `verify_token` dependency via `Depends()`.
-3. **Cryptographic Validation**: `verify_token()` verifies signature integrity and checks expiration against `settings.JWT_SECRET` and `settings.ALGORITHM`.
-4. **Context Injection**: The verified payload is passed to the route handler, which returns user context: `{"username": payload["sub"], "status": "active"}`.
-
----
-
-## 3. Key Design Patterns & Abstractions
-
-* **Stateless Token-Based Authentication**: Authentication state is encapsulated entirely within self-contained JWTs containing subject (`sub`) and expiration (`exp`) claims, eliminating server-side session persistence.
-* **FastAPI Dependency Injection (DI)**: Declarative request extraction and validation are enforced through FastAPI's `Depends` system for both form payloads (`OAuth2PasswordRequestForm`) and authentication validation pipelines (`verify_token`).
-* **Singleton Configuration**: Static application settings and cryptographic parameters are centralized in a single `Settings` instance in `src/config.py`.
-
----
-
-## 4. Production Readiness & Architectural Considerations
-
-1. **Token Transport via Header**: `verify_token` currently receives tokens directly as a parameter. In production, this should integrate `fastapi.security.OAuth2PasswordBearer` to automatically extract and validate Bearer tokens from the HTTP `Authorization: Bearer <token>` header.
-2. **Credential Storage & Password Hashing**: The current implementation uses in-memory credentials. Production deployment requires database-backed identity persistence using `DATABASE_URL` combined with secure hashing (e.g., Argon2, bcrypt) via Passlib.
-3. **Asymmetric Cryptography for Microservices**: The service currently uses symmetric signing (`HS256`), requiring token-verifying services to share the secret. Migrating to asymmetric cryptography (`RS256` or `EdDSA`) allows `mini-auth-service` to sign tokens using a private key while external services verify tokens using a public key.
-4. **Environment-Based Configuration**: The `Settings` model should leverage `pydantic-settings` (`BaseSettings`) to support dynamic environment variable overrides rather than static in-code defaults.
+| **Secrets Management** | `JWT_SECRET` is statically configured in `src/config.py`. | Migrate to `pydantic-settings` to dynamically load secrets from environment variables or a key vault. |
+| **Persistence & Hashing** | Static/mock credential checks in `src/auth.py`. | Integrate an ORM (e.g., SQLAlchemy/SQLModel) connected to `DATABASE_URL` with secure password hashing (`bcrypt`/`argon2`). |
+| **Token Extraction** | Direct parameter binding in `src/main.py`. | Implement FastAPI's `OAuth2PasswordBearer` scheme to standardize HTTP `Authorization: Bearer` extraction and error signaling. |
