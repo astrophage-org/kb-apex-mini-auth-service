@@ -3,7 +3,7 @@ mission: SOL-1
 title: 'Account Lockout on Repeated Failed Logins'
 role: developer
 status: draft
-version: 6
+version: 7
 author: dev
 ai_drafted: false
 ---
@@ -65,6 +65,9 @@ ai_drafted: false
 
 ## Open questions
 - Should lockout state persist across process restarts? (State is currently maintained in-memory consistent with existing architecture; Redis/DB persistence is documented on the roadmap in [[kb:mini-auth-service/summaries/roadmap-and-improvements]]).
+
+## Monitoring
+- Alert when lockouts spike above normal.
 
 ## Verification checklist
 - [ ] Task 1: Lockout configuration constants (`MAX_FAILED_LOGIN_ATTEMPTS = 5`, `ACCOUNT_LOCKOUT_DURATION_MINUTES = 15`) added to `src/config.py`.
