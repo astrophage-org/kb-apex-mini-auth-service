@@ -3,7 +3,7 @@ mission: SOL-1
 title: 'Account Lockout on Repeated Failed Logins'
 role: developer
 status: approved
-version: 8
+version: 9
 author: dev
 ai_drafted: false
 approved_at: 2026-09-23T23:27:19Z
@@ -72,7 +72,7 @@ approved_at: 2026-09-23T23:27:19Z
 - Alert when lockouts spike above normal.
 
 ## Verification checklist
-- [ ] Task 1: Lockout configuration constants (`MAX_FAILED_LOGIN_ATTEMPTS = 5`, `ACCOUNT_LOCKOUT_DURATION_MINUTES = 15`) added to `src/config.py`.
+- [x] Task 1: Lockout configuration constants (`MAX_FAILED_LOGIN_ATTEMPTS = 5`, `ACCOUNT_LOCKOUT_DURATION_MINUTES = 15`) added to `src/config.py`.
 - [ ] Task 2: In-memory state tracking dictionary and username normalization implemented in `src/auth.py`.
 - [ ] Task 3: Lockout evaluation (`is_account_locked`), failure recording (`record_failed_attempt`), and counter reset (`reset_failed_attempts`) implemented in `src/auth.py`.
 - [ ] Task 4: Lockout checks integrated into `POST /api/v1/auth/login` in `src/main.py` and `src/auth.py` with standard HTTP 401 exceptions.
