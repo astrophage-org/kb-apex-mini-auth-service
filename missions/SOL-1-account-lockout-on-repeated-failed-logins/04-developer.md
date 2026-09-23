@@ -2,10 +2,11 @@
 mission: SOL-1
 title: 'Account Lockout on Repeated Failed Logins'
 role: developer
-status: draft
+status: approved
 version: 8
 author: dev
 ai_drafted: false
+approved_at: 2026-09-23T23:27:19Z
 ---
 
 # Build spec: Account Lockout on Repeated Failed Logins
