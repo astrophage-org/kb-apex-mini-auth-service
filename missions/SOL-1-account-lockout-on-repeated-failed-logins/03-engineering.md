@@ -3,7 +3,7 @@ mission: SOL-1
 title: 'Account Lockout on Repeated Failed Logins'
 role: engineering
 status: ai_drafted
-version: 3
+version: 4
 author: Sol
 ai_drafted: true
 ---
@@ -45,6 +45,7 @@ When a client submits credentials to `POST /api/v1/auth/login` ([[kb:mini-auth-s
    - Increment `failed_attempts` by 1.
    - If `failed_attempts >= MAX_FAILED_LOGIN_ATTEMPTS`:
      - Set `locked_until = datetime.utcnow() + timedelta(minutes=ACCOUNT_LOCKOUT_DURATION_MINUTES)`.
+     - Trigger user lockout notification handler (`notify_account_locked(username, locked_until)`) to notify the account owner.
      - Raise `HTTPException(status_code=401, detail="Account locked due to 5 consecutive failed login attempts. Try again in 15 minutes.")`.
    - Otherwise, raise standard `HTTPException(status_code=401, detail="Incorrect username or password")`.
 
@@ -56,6 +57,11 @@ To mitigate memory exhaustion from automated brute-force attacks cycling randomi
 To enforce account integrity and prevent split-state lockout bypasses:
 - Account lookup and lockout tracking enforce strict uniqueness on normalized username keys.
 - Credential evaluations check for ambiguous or duplicate account identities in the user store and resolve to a single canonical account record, ensuring that concurrent attempts across case variants cannot bypass lockout thresholds.
+
+### 6. User Lockout Notification
+When an account reaches the lockout threshold on the 5th failed attempt:
+- The authentication domain invokes `notify_account_locked(username: str, locked_until: datetime)` in `src/auth.py`.
+- The notification handler dispatches a security notification event/alert containing the locked username and expiration timestamp, alongside the explicit in-band HTTP 401 error response returned to the client.
 
 ## Contracts affected
 
@@ -78,9 +84,9 @@ To enforce account integrity and prevent split-state lockout bypasses:
 
 | Level | What it proves | AC or contract covered |
 | :--- | :--- | :--- |
-| **Unit** | Lockout tracking logic in `src/auth.py`: failed attempt incrementing, threshold triggering, lockout expiration arithmetic, and counter reset on success | AC-1, AC-2, AC-4, AC-5, AC-6 |
+| **Unit** | Lockout tracking logic in `src/auth.py`: failed attempt incrementing, threshold triggering, lockout expiration arithmetic, counter reset on success, and dispatch of user notification on lockout | AC-1, AC-2, AC-4, AC-5, AC-6 |
 | **Unit** | Username casing normalization, duplicate account check/identity resolution, and bounded memory eviction on non-existent usernames | Edge cases: username casing, non-existent usernames, duplicate account check |
-| **Integration** | `POST /api/v1/auth/login` endpoint returns HTTP 401 with lockout message after 5 failed attempts, blocks subsequent valid/invalid attempts during lockout window, and unlocks after expiration | AC-1, AC-2, AC-3, AC-5 |
+| **Integration** | `POST /api/v1/auth/login` endpoint returns HTTP 401 with lockout message after 5 failed attempts, dispatches lockout notification, blocks subsequent valid/invalid attempts during lockout window, and unlocks after expiration | AC-1, AC-2, AC-3, AC-5 |
 | **Contract** | Request form schema and HTTP response structures for `POST /api/v1/auth/login` remain backward-compatible; existing token verification on `GET /api/v1/auth/me` remains unchanged | `POST /api/v1/auth/login`, `GET /api/v1/auth/me` |
 
 ## Rollout and rollback
@@ -98,6 +104,7 @@ To enforce account integrity and prevent split-state lockout bypasses:
 
 - [ ] Consecutive failed login attempts increment by 1 on `POST /api/v1/auth/login`.
 - [ ] An account is placed in locked status upon the 5th consecutive failed attempt.
+- [ ] User lockout notification is triggered when an account reaches the 5-attempt lockout threshold.
 - [ ] Login requests for a locked account are rejected during the 15-minute lockout period, even when the correct password is submitted.
 - [ ] A successful login before reaching 5 failures resets the failure counter to 0.
 - [ ] After 15 minutes elapse from the lockout time, valid credentials successfully authenticate and reset the counter.
