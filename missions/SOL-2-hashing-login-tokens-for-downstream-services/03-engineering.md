@@ -3,7 +3,7 @@ mission: SOL-2
 title: 'Hashing login tokens for downstream services'
 role: engineering
 status: draft
-version: 1
+version: 2
 author: Akash Bajpai
 ai_drafted: false
 ---
@@ -46,8 +46,27 @@ ai_drafted: false
 - **Configuration invariants**: Static configuration definitions in `src/config.py` ([[kb:mini-auth-service/entities/configuration-settings]]) remain the single source of truth for auth settings.
 
 ## Risks
-- **Downstream payload format incompatibility**: Downstream consumers expecting raw JWT formatting to extract claims without calling auth endpoints will fail if they attempt to decode the hash; downstream consumers must treat the hash as an opaque identifier.
-- **Error handling on hashing failure**: Any exception during the token hashing or downstream dispatch pipeline must not leak raw tokens into failure logs or uncaught exception stack traces.
+
+- **Loss of stateless claim extraction (user identity and expiration)**:
+  - *Context*: Under current token issuance in `src/auth.py` ([[kb:mini-auth-service/entities/auth-domain]]), JWTs carry claims such as `sub` (username) and `exp` signed with `HS256` ([[kb:mini-auth-service/decisions/jwt-hs256-signing]]). Downstream services could previously inspect or decode these claims directly.
+  - *Risk*: A cryptographic hash (e.g., SHA-256 hex digest) is one-way and opaque; downstream consumers cannot decode user identity or expiration timestamps from the hashed token itself.
+  - *Likelihood*: High (if downstream services rely on reading JWT claims).
+  - *Mitigation*: Ensure event payloads (such as `event_topic Header.Payload.Signature`) explicitly include necessary non-sensitive metadata (like `username`/`sub`) alongside the hashed token, or ensure downstream consumers treat the hash strictly as an opaque correlation identifier.
+- **Downstream JWT parser and verification breakage**:
+  - *Context*: Downstream microservices configured to decode inbound tokens via `PyJWT` (`jwt.decode`) or `verify_token` expect a standard three-part base64url-encoded JWT string.
+  - *Risk*: Passing a raw hash will cause downstream parsing exceptions (e.g., `jwt.exceptions.DecodeError`) if services attempt to decode it as a JWT.
+  - *Likelihood*: Medium.
+  - *Mitigation*: Audit downstream consumers to ensure they do not attempt `jwt.decode` on the hashed token field; update consumer contracts to treat the field as an opaque string hash.
+- **Inability to use token for downstream re-authentication / delegation**:
+  - *Context*: If a downstream service previously forwarded the received login token to authenticate upstream or peer API calls (e.g., against `GET /api/v1/auth/me` via `verify_token` [[kb:mini-auth-service/decisions/fastapi-dependency-injection]]), an opaque hash cannot be validated as a bearer credential.
+  - *Risk*: Downstream services attempting API delegation using the hashed token will receive `401 Unauthorized`.
+  - *Likelihood*: Medium.
+  - *Mitigation*: Restrict hashed token usage strictly to session tracking, auditing, and correlation; services requiring authenticated calls must obtain their own credentials rather than delegating the hashed login token.
+- **Error handling on hashing failure**:
+  - *Context*: Exceptions during token hashing or downstream dispatch pipeline.
+  - *Risk*: Any unhandled exception during hashing could leak raw tokens into logs or uncaught exception stack traces.
+  - *Likelihood*: Low.
+  - *Mitigation*: Implement robust error handling in presentation dispatch (`src/main.py`), ensuring raw token strings are masked or omitted in error logging.
 
 ## Verification checklist
 - [ ] Token hashing utility is implemented in `src/auth.py` ([[kb:mini-auth-service/entities/auth-domain]]).
