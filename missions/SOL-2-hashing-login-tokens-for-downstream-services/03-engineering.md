@@ -3,7 +3,7 @@ mission: SOL-2
 title: 'Hashing login tokens for downstream services'
 role: engineering
 status: draft
-version: 2
+version: 3
 author: Akash Bajpai
 ai_drafted: false
 ---
@@ -45,6 +45,17 @@ ai_drafted: false
 - **[[kb:mini-auth-service/decisions/fastapi-dependency-injection]]**: Request guard mechanics using `fastapi.Depends` and `OAuth2PasswordRequestForm` must not be altered when adding downstream hashing logic.
 - **Configuration invariants**: Static configuration definitions in `src/config.py` ([[kb:mini-auth-service/entities/configuration-settings]]) remain the single source of truth for auth settings.
 
+## Test strategy
+
+| Level | What it proves | AC or contract covered |
+| :--- | :--- | :--- |
+| **Unit** | Token hashing function in `src/auth.py` ([[kb:mini-auth-service/entities/auth-domain]]) deterministically hashes valid JWTs using SHA-256 and fails safely on malformed/empty tokens. | AC-1, Edge cases |
+| **Unit** | `verify_token` in `src/auth.py` rejects hashed token strings, returning `None` due to missing standard HS256 JWT header/payload structure ([[kb:mini-auth-service/decisions/jwt-hs256-signing]]). | AC-3, Replay Risk |
+| **Integration** | Calling protected endpoints (`GET /api/v1/auth/me` and `GET /auth/me` [[kb:mini-auth-service/decisions/fastapi-dependency-injection]]) with `Authorization: Bearer <hashed_token>` yields `401 Unauthorized`, proving downstream services cannot replay hashed tokens against the auth API. | AC-3, Replay Risk, `GET /api/v1/auth/me` |
+| **Integration** | `POST /api/v1/auth/login` and `POST /auth/login` ([[kb:mini-auth-service/summaries/api-reference]]) return raw bearer tokens to the HTTP caller while emitting only the hashed token to downstream dispatch pipelines. | AC-1, AC-2, AC-3, `POST /api/v1/auth/login` |
+| **Contract** | Downstream dispatch payloads (such as `event_topic Header.Payload.Signature`) contain only the hashed token format and expected metadata, with 0 raw JWT leakage and no requirement for `JWT_SECRET`. | AC-1, AC-2, `event_topic Header.Payload.Signature` |
+| **Integration** | Consecutive login calls generate distinct timestamped JWTs resulting in unique hashed tokens downstream. | Edge cases |
+
 ## Risks
 
 - **Loss of stateless claim extraction (user identity and expiration)**:
@@ -67,8 +78,14 @@ ai_drafted: false
   - *Risk*: Any unhandled exception during hashing could leak raw tokens into logs or uncaught exception stack traces.
   - *Likelihood*: Low.
   - *Mitigation*: Implement robust error handling in presentation dispatch (`src/main.py`), ensuring raw token strings are masked or omitted in error logging.
+- **Token replay / downstream credential replay**:
+  - *Context*: Downstream services receive the hashed token for tracking, correlation, or auditing. If a compromised downstream service or malicious actor attempts to use or replay this hashed token as a bearer credential against upstream auth APIs (e.g., `GET /api/v1/auth/me` or `GET /auth/me`), or replay it across internal downstream endpoints expecting an active session.
+  - *Risk*: If downstream services attempt to replay the hashed token against `mini-auth-service` route guards, or if downstream consumers do not independently enforce session expiration and treat cached hashes as permanently valid credentials, unauthorized actions or prolonged session validity could occur.
+  - *Likelihood*: Low (for API route guards, as `verify_token` in `src/auth.py` strictly verifies HS256 JWT structures; Medium for stateful downstream services if expiry is not checked).
+  - *Mitigation*: Verify that `verify_token` ([[kb:mini-auth-service/decisions/fastapi-dependency-injection]]) rejects hashed tokens with `401 Unauthorized` / invalid token format when passed in `Authorization: Bearer <hash>`. Ensure downstream services implement time-to-live (TTL) / expiration windows on hashed token records rather than allowing indefinite replay.
 
 ## Verification checklist
+
 - [ ] Token hashing utility is implemented in `src/auth.py` ([[kb:mini-auth-service/entities/auth-domain]]).
 - [ ] Downstream dispatches and events (such as `event_topic Header.Payload.Signature`) emit only the hashed token representation.
 - [ ] No raw JWT strings are emitted to downstream network calls or log sinks.
@@ -76,3 +93,4 @@ ai_drafted: false
 - [ ] `GET /api/v1/auth/me` and `GET /auth/me` continue to function without modification using `verify_token` ([[kb:mini-auth-service/decisions/fastapi-dependency-injection]]).
 - [ ] Downstream tracking services operate without requiring access to `JWT_SECRET` ([[kb:mini-auth-service/decisions/jwt-hs256-signing]]).
 - [ ] All unchanged contracts (`POST /api/v1/auth/login`, `POST /auth/login`, `GET /api/v1/auth/me`, `GET /auth/me`) are untouched.
+- [ ] Replaying hashed tokens against protected API endpoints (`GET /api/v1/auth/me`, `GET /auth/me`) fails with `401 Unauthorized`.
