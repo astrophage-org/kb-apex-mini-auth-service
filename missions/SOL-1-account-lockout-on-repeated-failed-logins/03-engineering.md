@@ -3,7 +3,7 @@ mission: SOL-1
 title: 'Account Lockout on Repeated Failed Logins'
 role: engineering
 status: ai_drafted
-version: 2
+version: 3
 author: Sol
 ai_drafted: true
 ---
@@ -33,11 +33,11 @@ Add lockout settings to [[kb:mini-auth-service/entities/configuration-settings|s
 
 ### 3. Execution Flow in `authenticate_user` / `POST /api/v1/auth/login`
 When a client submits credentials to `POST /api/v1/auth/login` ([[kb:mini-auth-service/concepts/jwt-authentication-flow]]):
-1. **Username Normalization**: Normalize `form_data.username.strip().lower()` to ensure consistent key lookup.
+1. **Username Normalization & Duplicate Identity Resolution**: Normalize `form_data.username.strip().lower()` to canonical form to ensure duplicate representations (e.g., `Admin` vs `admin`) map to the exact same identity key.
 2. **Lockout Verification**: Check whether the user currently has an active lockout (`locked_until > datetime.utcnow()`).
    - If active: Immediately abort authentication and raise an `HTTPException(status_code=401, detail="Account is temporarily locked. Try again later.")`. The lockout expiration remains unchanged.
    - If `locked_until` exists but has elapsed (`locked_until <= datetime.utcnow()`): Reset `failed_attempts = 0` and clear `locked_until`.
-3. **Credential Evaluation**: Execute standard password verification.
+3. **Credential Evaluation**: Execute standard password verification against the canonical user identity.
 4. **On Authentication Success**:
    - Reset `failed_attempts = 0` and clear `locked_until`.
    - Issue signed HS256 JWT per [[kb:mini-auth-service/decisions/jwt-hs256-signing]].
@@ -52,12 +52,17 @@ When a client submits credentials to `POST /api/v1/auth/login` ([[kb:mini-auth-s
 To mitigate memory exhaustion from automated brute-force attacks cycling randomized usernames:
 - Failed attempts against unknown usernames are tracked in the same bounded cache with a TTL eviction policy or max-size LRU eviction mechanism.
 
+### 5. Duplicate Account Check & Identity Resolution
+To enforce account integrity and prevent split-state lockout bypasses:
+- Account lookup and lockout tracking enforce strict uniqueness on normalized username keys.
+- Credential evaluations check for ambiguous or duplicate account identities in the user store and resolve to a single canonical account record, ensuring that concurrent attempts across case variants cannot bypass lockout thresholds.
+
 ## Contracts affected
 
-| Contract | Owner app | Unchanged / Additive / Breaking |
-| :--- | :--- | :--- |
-| `POST /api/v1/auth/login` | `mini-auth-service` | Additive (Returns HTTP 401 with lockout-specific error message when threshold is reached or lockout is active; existing request form schema and 200 OK JWT payload remain untouched) |
-| `GET /api/v1/auth/me` | `mini-auth-service` | Unchanged |
+| Contract | Owner app | Consumers | Unchanged / Additive / Breaking |
+| :--- | :--- | :--- | :--- |
+| `POST /api/v1/auth/login` | `mini-auth-service` | External API clients, web clients | Additive (Returns HTTP 401 with lockout-specific error message when threshold is reached or lockout is active; existing request form schema and 200 OK JWT payload remain untouched) |
+| `GET /api/v1/auth/me` | `mini-auth-service` | Authenticated clients, microservices | Unchanged |
 
 ## Must not break
 - **Standard Authentication Flow**: Users with valid credentials on an unlocked account must continue to receive valid signed JWT tokens with standard 15-minute expiry per [[kb:mini-auth-service/concepts/jwt-authentication-flow]].
@@ -74,7 +79,7 @@ To mitigate memory exhaustion from automated brute-force attacks cycling randomi
 | Level | What it proves | AC or contract covered |
 | :--- | :--- | :--- |
 | **Unit** | Lockout tracking logic in `src/auth.py`: failed attempt incrementing, threshold triggering, lockout expiration arithmetic, and counter reset on success | AC-1, AC-2, AC-4, AC-5, AC-6 |
-| **Unit** | Username casing normalization and bounded memory eviction on non-existent usernames | Edge cases: username casing, non-existent usernames |
+| **Unit** | Username casing normalization, duplicate account check/identity resolution, and bounded memory eviction on non-existent usernames | Edge cases: username casing, non-existent usernames, duplicate account check |
 | **Integration** | `POST /api/v1/auth/login` endpoint returns HTTP 401 with lockout message after 5 failed attempts, blocks subsequent valid/invalid attempts during lockout window, and unlocks after expiration | AC-1, AC-2, AC-3, AC-5 |
 | **Contract** | Request form schema and HTTP response structures for `POST /api/v1/auth/login` remain backward-compatible; existing token verification on `GET /api/v1/auth/me` remains unchanged | `POST /api/v1/auth/login`, `GET /api/v1/auth/me` |
 
@@ -89,16 +94,14 @@ To mitigate memory exhaustion from automated brute-force attacks cycling randomi
 - **Account Lockout Denial-of-Service (DoS)**: An attacker can deliberately lock a known user's account by sending 5 invalid password attempts. *(Mitigation: Lockout is temporary at 15 minutes; IP rate limiting is planned in future roadmap phases per [[kb:mini-auth-service/summaries/roadmap-and-improvements]])*.
 - **In-Memory Volatility**: Restarting or horizontally scaling the `mini-auth-service` process clears or splits the lockout state. *(Mitigation: Acceptable for the current single-instance architecture prior to distributed cache introduction)*.
 
-## Open questions
-
-- How should duplicate account checking be handled given that mini-auth-service currently only implements login and token verification without a user registration endpoint?
-
 ## Verification checklist
+
 - [ ] Consecutive failed login attempts increment by 1 on `POST /api/v1/auth/login`.
 - [ ] An account is placed in locked status upon the 5th consecutive failed attempt.
 - [ ] Login requests for a locked account are rejected during the 15-minute lockout period, even when the correct password is submitted.
 - [ ] A successful login before reaching 5 failures resets the failure counter to 0.
 - [ ] After 15 minutes elapse from the lockout time, valid credentials successfully authenticate and reset the counter.
+- [ ] Duplicate account check and username normalization ensure attempts across case variants map to the same canonical account identity.
 - [ ] The request/response schema for `POST /api/v1/auth/login` remains additive and does not break existing clients.
 - [ ] The `GET /api/v1/auth/me` endpoint contract is unchanged.
 - [ ] JWT token generation continues to follow [[kb:mini-auth-service/decisions/jwt-hs256-signing]].
