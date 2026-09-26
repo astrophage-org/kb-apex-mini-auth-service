@@ -2,10 +2,11 @@
 mission: SOL-2
 title: 'Hashing login tokens for downstream services'
 role: engineering
-status: draft
+status: approved
 version: 3
 author: Akash Bajpai
 ai_drafted: false
+approved_at: 2026-09-26T07:43:31Z
 ---
 
 # Engineering design: Downstream Login Token Hashing
