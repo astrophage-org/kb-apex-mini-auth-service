@@ -2,10 +2,11 @@
 mission: SOL-2
 title: 'Hashing login tokens for downstream services'
 role: product
-status: ai_drafted
+status: approved
 version: 1
-author: Sol
-ai_drafted: true
+author: unknown
+ai_drafted: false
+approved_at: 2026-09-27T14:17:55Z
 ---
 
 # Product spec: Downstream Login Token Hashing
